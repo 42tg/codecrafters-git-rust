@@ -19,6 +19,7 @@ enum Commands {
     Init,
     CatFile(CatFileArgs),
     HashObject(HashObjectArgs),
+    LsTree(LsTreeArgs),
 }
 
 #[derive(Debug, Args)]
@@ -31,6 +32,12 @@ struct CatFileArgs {
 struct HashObjectArgs {
     #[arg(short='w', required = true)]
     path: String,
+}
+
+#[derive(Debug, Args)]
+struct LsTreeArgs {
+    #[arg(long="name-only", required = true)]
+    sha: String,
 }
 
 fn main() {
@@ -47,7 +54,7 @@ fn main() {
         Commands::CatFile(args) => {
             let item = GitObject::from_hash(&args.object);
             match item.decode() {
-                Ok(output) => print!("{}", output),
+                Ok(output) => output.print().unwrap(),
                 Err(_) => println!("Failed to Decode File"),
             }
         }
@@ -57,6 +64,15 @@ fn main() {
                 Ok(output) => print!("{}", output),
                 Err(_) => println!("Failed to Encode File"),
              }
+        }
+        Commands::LsTree(args) => {
+            let item = GitObject::from_hash(&args.sha);
+            match item.decode() {
+                Ok(output) => {
+                    output.print().unwrap();
+                },
+                Err(e) => println!("Failed to Decode File\n{}", e),
+            }
         }
     }
 }

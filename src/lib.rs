@@ -1,7 +1,7 @@
 use std::fs::{self, File};
 use std::marker::PhantomData;
-use std::io::{prelude::*, BufReader, BufWriter};
-use anyhow::Ok;
+use std::io::{prelude::*, BufReader, BufWriter, stdout, Cursor};
+use anyhow::{Ok, anyhow};
 use flate2::read::{ZlibDecoder, ZlibEncoder};
 use flate2::Compression;
 use sha1::Digest;
@@ -10,6 +10,56 @@ use sha1::Digest;
 pub struct ReadMode;
 pub struct WriteMode;
  
+pub struct GitType {
+    object_type: String,
+    content: Vec<u8>
+}
+
+impl GitType {
+    pub fn print(&self) -> Result<(), anyhow::Error>{
+        match self.object_type.as_str() {
+            "commit" => {
+                let mut stdout = stdout();
+                stdout.write_all(&self.content).unwrap();
+                Ok(())
+            },
+            "blob" => {
+                let mut stdout = stdout();
+                stdout.write_all(&self.content).unwrap();
+                Ok(())
+            },
+            "tree" => {
+                let content_len = self.content.len();
+                let mut reader = BufReader::new(Cursor::new(&self.content));
+                while reader.stream_position()? < content_len as u64 {
+                    //line looks like 100644<space>file_name.txt<null_byte><20_byte_sha1>
+                    let mut buffer = Vec::new();
+                    // read to 100644<space>
+                    reader.read_until(' ' as u8, &mut buffer)?;
+                    buffer.pop();
+                    buffer.clear();
+                    
+                    // read to file_name.txt<null_byte>
+                    reader.read_until(0, &mut buffer)?;
+                    buffer.pop();
+                    let file_name = String::from_utf8(buffer)?;
+
+                    // Size of the sha1 hash
+                    reader.seek_relative(20)?;
+
+                    println!("{}", file_name);
+                }
+                Ok(())
+            },
+            _ => {
+                Err(anyhow!(
+                    "Unsupported Object Type: {}", self.object_type
+                ))
+            }
+        }
+    }
+} 
+
 pub struct GitObject<T> {
     phantom: PhantomData<T>,
 
@@ -31,15 +81,41 @@ impl GitObject<ReadMode> {
         }
     }
 
-    pub fn decode(&self) -> Result<String, anyhow::Error> {
-        let contents = fs::read(&self.file_path)?;
+    pub fn decode(&self) -> Result<GitType, anyhow::Error> {        
+        let file = BufReader::new(File::open(&self.file_path)?);
+        let decoder = ZlibDecoder::new(file);
 
-        let mut z = ZlibDecoder::new(&contents[..]);
-        let mut s = String::new();
-        z.read_to_string(&mut s)?;
-        let (_, tail) = s.split_once("\0").unwrap();
+        let mut reader = BufReader::new(decoder);
+        let mut buffer = Vec::new();
+        
+        reader.read_until(' ' as u8, &mut buffer)?;
+        
+        // Remove Empty Item
+        buffer.pop();
+        let object_type = String::from_utf8(buffer.clone())?;
 
-        Ok(tail.to_string())
+        //Reset buffer
+        buffer.clear();
+        reader.read_until(0, &mut buffer)?;
+        buffer.pop();
+
+        let size = String::from_utf8(buffer.clone())?.parse::<usize>()?;
+
+        let mut content = Vec::new();
+        reader.read_to_end(&mut content)?;
+
+        if content.len() != size {
+            return Err(anyhow!(
+                "Incorrect content length, expected {} but was {}",
+                size,
+                content.len()
+            ));
+        }
+
+        Ok(GitType{
+            object_type,
+            content
+        })
     }
 }
 
@@ -66,7 +142,6 @@ impl GitObject<WriteMode> {
         hasher.update(&buffer);
         let hash = hasher.finalize();
         let hash_string = hex::encode(hash);
-
 
         let (directory, file) = hash_string.split_at(2);
         let path = format!(".git/objects/{}/{}", directory, file);
